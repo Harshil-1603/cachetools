@@ -23,12 +23,12 @@ branch is the pre-3.13 `@classmethod` check (`_descriptor.py:32`), reached only 
 
 ## Code — Potential Issues
 
-No functional regressions found. All items are design trade-offs or edge cases;
-none blocks the release.
+No functional regressions found. One performance regression against v7.2.4
+(Code #1); all other items are design trade-offs or edge cases.
 
 | # | Priority | Location | Finding |
 |---|----------|----------|---------|
-| 1 | Low | `_MethodDescriptor.__get__` (`super()` path) | `super().method` never hits the instance dict, so every call builds a throw-away wrapper (including `functools.update_wrapper`) and rescans the MRO before `setdefault` returns the stored one. Correct, but noticeably slower than the primary path. |
+| 1 | Medium | `_decorator.py` mixins, `_cached.py` `_WrapperBase` | `@cached` calls are 15–20% slower than in v7.2.4. Measured with the docs' `fib(42)` example (`cache={}`, Python 3.14.4, `timeit`, best of 7, two runs per version from a v7.2.4 worktree and the working tree): cold `fib(42)` after `cache_clear()` 34–35 µs → 41–42 µs; a single cache hit 300 ns → 343–352 ns; with `lock=` 358–373 → 411–420 ns; with `info=True` 319–326 → 389–390 ns. Cause: the v7 wrappers were closures reading `cache`, `key` and `func` from cells, while the v8 wrappers are callable objects, so every call pays `__call__` dispatch plus instance-dict lookups of `cache`, `cache_key` and the mangled `__func`. An isolated probe with the same body as `_BasicMixin.__call__` shows 115 ns (closure) → 135 ns (callable object) per hit. The object design is what provides `__get__`, `__reduce__` and the public attributes, so this may be an accepted cost; `__slots__` is not an option because `update_wrapper` needs `__dict__`. |
 | 2 | Low | `Cache.__setitem__` / `__delitem__` | Size accounting assumes a value's size is stable after insertion; mutating cached values in place can desync `currsize`. By design and documented, but a known footgun. |
 | 3 | Low | `_decorator.py` `_ConditionMixin` / `_ConditionInfoMixin` | Stampede prevention uses a pending set per wrapper, i.e. per instance for `@cachedmethod`. Two instances sharing one cache and condition do not coordinate pending keys. |
 | 4 | Info | `_MethodDescriptor.__get__` | `copy.copy(obj)` shallow-copies `obj.__dict__`, so the copy shares the original's wrapper, still bound to the original `obj` (`a2.get is a.get`).  `copy.deepcopy` and `pickle` are fine.  Accepted, `functools.cached_property` semantics; the data-descriptor fix was rejected for its per-call cost (*Maintainer Decisions* in `copilot-instructions.md`). |
